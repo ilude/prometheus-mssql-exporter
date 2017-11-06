@@ -114,18 +114,17 @@ FROM sys.dm_os_performance_counters with (nolock)where counter_name='Page life e
     }
 };
 
+const mssql_io_stall_metric = new client.Gauge({name: 'mssql_io_stall', help: 'Wait time (ms) of stall since last restart', labelNames: ['database', 'type']});
 const mssql_io_stall = {
     metrics: {
-        mssql_io_stall: new client.Gauge({name: 'mssql_io_stall', help: 'Wait time (ms) of stall since last restart', labelNames: ['database', 'type']}),
+        mssql_io_stall: mssql_io_stall_metric,
         mssql_io_stall_total: new client.Gauge({name: 'mssql_io_stall_total', help: 'Wait time (ms) of stall since last restart', labelNames: ['database']}),
     },
     query: `SELECT
 cast(DB_Name(a.database_id) as varchar) as name,
-    max(io_stall_read_ms),
-    max(io_stall_write_ms),
-    max(io_stall),
-    max(io_stall_queued_read_ms),
-    max(io_stall_queued_write_ms)
+    sum(io_stall_read_ms),
+    sum(io_stall_write_ms),
+    sum(io_stall)
 FROM
 sys.dm_io_virtual_file_stats(null, null) a
 INNER JOIN sys.master_files b ON a.database_id = b.database_id and a.file_id = b.file_id
@@ -137,12 +136,33 @@ group by a.database_id`,
             const read = row[1].value;
             const write = row[2].value;
             const stall = row[3].value;
-            const queued_read = row[4].value;
-            const queued_write = row[5].value;
             debug("Fetch number of stalls for database", database);
             metrics.mssql_io_stall_total.set({database: database}, stall);
             metrics.mssql_io_stall.set({database: database, type: "read"}, read);
             metrics.mssql_io_stall.set({database: database, type: "write"}, write);
+        }
+    }
+};
+
+const mssql_io_stall_2014_plus = {
+    metrics: {
+        mssql_io_stall: mssql_io_stall_metric,
+    },
+    query: `SELECT
+cast(DB_Name(a.database_id) as varchar) as name,
+    sum(io_stall_queued_read_ms),
+    sum(io_stall_queued_write_ms)
+FROM
+sys.dm_io_virtual_file_stats(null, null) a
+INNER JOIN sys.master_files b ON a.database_id = b.database_id and a.file_id = b.file_id
+group by a.database_id`,
+    collect: function (rows, metrics) {
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const database = row[0].value;
+            const queued_read = row[1].value;
+            const queued_write = row[2].value;
+            debug("Fetch number of stalls for database (SQL Server 2014 and later)", database);
             metrics.mssql_io_stall.set({database: database, type: "queued_read"}, queued_read);
             metrics.mssql_io_stall.set({database: database, type: "queued_write"}, queued_write);
         }
@@ -212,6 +232,7 @@ const metrics = [
     mssql_log_growths,
     mssql_page_life_expectancy,
     mssql_io_stall,
+    mssql_io_stall_2014_plus,
     mssql_batch_requests,
     mssql_os_process_memory,
     mssql_os_sys_memory
